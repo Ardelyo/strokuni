@@ -1,10 +1,11 @@
-// Strokuni relay server. Zero web framework: node:http + JSON file store.
-// Holds the API key, enforces rules (schema, med guard, daily limits), relays between Lio's phone and family phones.
+// Strokuni relay server. Zero web framework: node:http. Storage: Firestore (prod) or JSON file (dev).
+// Holds AI credentials (service account), enforces rules (schema, med guard, daily limits),
+// relays between Lio's phone and family phones.
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { Store } from './store.mjs';
-import { summarize, readLabel, aiEnabled, MODEL, GuardError } from './ai.mjs';
+import { createStore } from './store.mjs';
+import { summarize, readLabel, aiEnabled, MODEL, FALLBACK_MODEL, GuardError } from './ai.mjs';
 
 const PORT = Number(process.env.PORT || 8787);
 const FAMILY_CODES = (process.env.FAMILY_CODES || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -14,12 +15,13 @@ const STALE_MINUTES = Number(process.env.STALE_MINUTES || 180);
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '*').split(',').map((s) => s.trim());
 const MAX_BODY = 8 * 1024 * 1024;
 
-if (!FAMILY_CODES.length) console.warn('[strokuni] FAMILY_CODES is empty: every request will be rejected. Set FAMILY_CODES=kode-rahasia');
-if (!aiEnabled()) console.warn('[strokuni] ANTHROPIC_API_KEY not set: AI endpoints return 503, apps fall back to manual summaries.');
+if (!FAMILY_CODES.length) console.warn('[strokuni] FAMILY_CODES is empty: every request will be rejected.');
+if (!aiEnabled()) console.warn('[strokuni] GOOGLE_CLOUD_PROJECT not set: AI endpoints return 503, apps fall back to manual summaries.');
 
-const store = new Store(process.env.DATA_DIR || fileURLToPath(new URL('./data/', import.meta.url)));
+const store = createStore({ dir: process.env.DATA_DIR || fileURLToPath(new URL('./data/', import.meta.url)) });
 
 const dayKey = (d = new Date()) => d.toISOString().slice(0, 10);
+const httpError = (status, message) => Object.assign(new Error(message), { status });
 
 function cors(req, res) {
   const origin = req.headers.origin;
@@ -38,21 +40,22 @@ function send(res, status, data) {
 
 async function readJson(req) {
   let size = 0; const chunks = [];
-  for await (const c of req) { size += c.length; if (size > MAX_BODY) throw Object.assign(new Error('Body terlalu besar'), { status: 413 }); chunks.push(c); }
+  for await (const c of req) { size += c.length; if (size > MAX_BODY) throw httpError(413, 'Body terlalu besar'); chunks.push(c); }
   if (!chunks.length) return {};
-  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw Object.assign(new Error('JSON tidak valid'), { status: 400 }); }
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw httpError(400, 'JSON tidak valid'); }
 }
 
-function family(req) {
+/** Validates the family code header and returns the code. */
+function auth(req) {
   const code = String(req.headers['x-family-code'] || '');
-  if (!code || !FAMILY_CODES.includes(code)) throw Object.assign(new Error('Kode keluarga salah'), { status: 401 });
-  return store.family(code);
+  if (!code || !FAMILY_CODES.includes(code)) throw httpError(401, 'Kode keluarga salah');
+  return code;
 }
 
 function takeQuota(fam) {
   const d = dayKey();
   if (fam.usage.day !== d) fam.usage = { day: d, calls: 0, inputTokens: 0, outputTokens: 0 };
-  if (fam.usage.calls >= DAILY_CALL_LIMIT) throw Object.assign(new Error(`Batas ${DAILY_CALL_LIMIT} panggilan AI hari ini tercapai`), { status: 429 });
+  if (fam.usage.calls >= DAILY_CALL_LIMIT) throw httpError(429, `Batas ${DAILY_CALL_LIMIT} panggilan AI hari ini tercapai`);
   fam.usage.calls++;
 }
 function addUsage(fam, usage) {
@@ -76,27 +79,28 @@ function staleAlert(fam) {
   return { id: 'stale', type: 'stale', at: new Date().toISOString(), message: `HP Lio tidak mengirim sinyal "masih hidup" selama ${Math.round(mins / 60)} jam. Periksa HP dan alarm cadangan.` };
 }
 
+const aiFailure = (e) => (e instanceof GuardError ? httpError(422, e.message) : httpError(502, 'AI gagal: ' + (e.message || e)));
+
 const routes = {
   'GET /api/health': async (req) => {
-    const fam = family(req);
-    const d = dayKey();
-    const used = fam.usage.day === d ? fam.usage.calls : 0;
-    return { ok: true, ai: aiEnabled(), model: aiEnabled() ? MODEL : null, remainingToday: Math.max(0, DAILY_CALL_LIMIT - used) };
+    const fam = await store.get(auth(req));
+    const used = fam.usage.day === dayKey() ? fam.usage.calls : 0;
+    return { ok: true, ai: aiEnabled(), model: aiEnabled() ? MODEL : null, fallbackModel: aiEnabled() ? FALLBACK_MODEL : null, remainingToday: Math.max(0, DAILY_CALL_LIMIT - used) };
   },
 
   'POST /api/heartbeat': async (req) => {
-    const fam = family(req); const b = await readJson(req);
+    const code = auth(req); const b = await readJson(req);
     const role = b.role === 'family' ? 'family' : 'lio';
-    fam.heartbeats[role] = new Date().toISOString();
-    if (role === 'lio' && b.snapshot && typeof b.snapshot === 'object') fam.snapshot = { ...b.snapshot, receivedAt: new Date().toISOString() };
-    if (b.taken && Array.isArray(b.taken)) fam.nativeTaken = b.taken.slice(-50);
-    store.save();
+    await store.mutate(code, (fam) => {
+      fam.heartbeats[role] = new Date().toISOString();
+      if (role === 'lio' && b.snapshot && typeof b.snapshot === 'object') fam.snapshot = { ...b.snapshot, receivedAt: new Date().toISOString() };
+      if (Array.isArray(b.taken)) fam.nativeTaken = b.taken.slice(-50).map((t) => ({ date: String(t.date || ''), key: String(t.key || ''), at: String(t.at || '') }));
+    });
     return { ok: true };
   },
 
   'GET /api/status': async (req) => {
-    const fam = family(req);
-    const hb = fam.heartbeats.lio || null;
+    const fam = await store.get(auth(req));
     let snapshot = fam.snapshot || null;
     // Confirmations made on the native alarm screen while the web layer was closed
     if (snapshot && Array.isArray(fam.nativeTaken)) {
@@ -105,22 +109,24 @@ const routes = {
         return d.takenAt || !t ? d : { ...d, takenAt: t.at };
       }) };
     }
-    return { lastHeartbeat: hb, stale: !!staleAlert(fam), snapshot };
+    return { lastHeartbeat: fam.heartbeats.lio || null, stale: !!staleAlert(fam), snapshot };
   },
 
   'POST /api/alerts': async (req) => {
-    const fam = family(req); const b = await readJson(req);
+    const code = auth(req); const b = await readJson(req);
     const type = ['missed_dose', 'help', 'stale', 'other'].includes(b.type) ? b.type : 'other';
     const message = String(b.message || '').slice(0, 300);
     const dedupe = b.dedupe ? String(b.dedupe).slice(0, 120) : null;
-    if (dedupe && fam.alerts.some((a) => a.dedupe === dedupe)) return { ok: true, duplicate: true };
-    fam.alerts.push({ id: randomUUID(), type, message, dedupe, at: new Date().toISOString() });
-    prune(fam); store.save();
-    return { ok: true };
+    return store.mutate(code, (fam) => {
+      if (dedupe && fam.alerts.some((a) => a.dedupe === dedupe)) return { ok: true, duplicate: true };
+      fam.alerts.push({ id: randomUUID(), type, message, dedupe, at: new Date().toISOString() });
+      prune(fam);
+      return { ok: true };
+    });
   },
 
   'GET /api/alerts': async (req, url) => {
-    const fam = family(req);
+    const fam = await store.get(auth(req));
     const since = Number(url.searchParams.get('since') || 0);
     const list = fam.alerts.filter((a) => new Date(a.at).getTime() > since);
     const st = staleAlert(fam);
@@ -129,77 +135,73 @@ const routes = {
   },
 
   'POST /api/summary': async (req) => {
-    const fam = family(req); const b = await readJson(req);
-    if (!aiEnabled()) throw Object.assign(new Error('AI belum diatur di server'), { status: 503 });
-    if (!b.log || typeof b.log !== 'object' || !/^\d{4}-\d{2}-\d{2}$/.test(b.log.date || '')) throw Object.assign(new Error('Log tidak valid'), { status: 400 });
-    takeQuota(fam); store.save();
+    const code = auth(req); const b = await readJson(req);
+    if (!aiEnabled()) throw httpError(503, 'AI belum diatur di server');
+    if (!b.log || typeof b.log !== 'object' || !/^\d{4}-\d{2}-\d{2}$/.test(b.log.date || '')) throw httpError(400, 'Log tidak valid');
+    await store.mutate(code, (fam) => takeQuota(fam));
     let out;
-    try { out = await summarize(b.log); }
-    catch (e) {
-      if (e instanceof GuardError) throw Object.assign(new Error(e.message), { status: 422 });
-      throw Object.assign(new Error('AI gagal: ' + (e.message || e)), { status: 502 });
-    }
-    addUsage(fam, out.usage);
+    try { out = await summarize(b.log); } catch (e) { throw aiFailure(e); }
     const next = new Date(b.log.date); next.setDate(next.getDate() + 1);
     const draft = { id: randomUUID(), date: b.log.date, forDate: next.toISOString().slice(0, 10), createdAt: new Date().toISOString(), source: 'ai', model: out.model, summary: out.summary, status: 'pending' };
-    fam.drafts = fam.drafts.filter((d) => !(d.date === draft.date && d.status === 'pending'));
-    fam.drafts.push(draft);
-    prune(fam); store.save();
+    await store.mutate(code, (fam) => {
+      addUsage(fam, out.usage);
+      fam.drafts = fam.drafts.filter((d) => !(d.date === draft.date && d.status === 'pending'));
+      fam.drafts.push(draft);
+      prune(fam);
+    });
     return { draft };
   },
 
   'POST /api/label': async (req) => {
-    const fam = family(req); const b = await readJson(req);
-    if (!aiEnabled()) throw Object.assign(new Error('AI belum diatur di server'), { status: 503 });
-    takeQuota(fam); store.save();
-    try {
-      const out = await readLabel(b.image);
-      addUsage(fam, out.usage); store.save();
-      return { label: out.label };
-    } catch (e) {
-      if (e instanceof GuardError) throw Object.assign(new Error(e.message), { status: 422 });
-      throw Object.assign(new Error('AI gagal: ' + (e.message || e)), { status: 502 });
-    }
+    const code = auth(req); const b = await readJson(req);
+    if (!aiEnabled()) throw httpError(503, 'AI belum diatur di server');
+    await store.mutate(code, (fam) => takeQuota(fam));
+    let out;
+    try { out = await readLabel(b.image); } catch (e) { throw aiFailure(e); }
+    await store.mutate(code, (fam) => addUsage(fam, out.usage));
+    return { label: out.label };
   },
 
   'GET /api/drafts': async (req, url) => {
-    const fam = family(req);
+    const fam = await store.get(auth(req));
     const status = url.searchParams.get('status');
     return { drafts: fam.drafts.filter((d) => !status || d.status === status).slice(-10) };
   },
 
   'POST /api/drafts/:id': async (req, url, params) => {
-    const fam = family(req); const b = await readJson(req);
-    const d = fam.drafts.find((x) => x.id === params.id);
-    if (!d) return { ok: true, missing: true };
-    if (!['approved', 'rejected'].includes(b.status)) throw Object.assign(new Error('Status tidak valid'), { status: 400 });
-    d.status = b.status; d.decidedAt = new Date().toISOString();
-    if (b.summary) d.summary = b.summary;
-    store.save();
-    return { ok: true };
+    const code = auth(req); const b = await readJson(req);
+    if (!['approved', 'rejected'].includes(b.status)) throw httpError(400, 'Status tidak valid');
+    return store.mutate(code, (fam) => {
+      const d = fam.drafts.find((x) => x.id === params.id);
+      if (!d) return { ok: true, missing: true };
+      d.status = b.status; d.decidedAt = new Date().toISOString();
+      if (b.summary && typeof b.summary === 'object') d.summary = b.summary;
+      return { ok: true };
+    });
   },
 
   'GET /api/plan': async (req, url) => {
-    const fam = family(req);
+    const fam = await store.get(auth(req));
     return { plan: fam.plans[url.searchParams.get('date')] || null };
   },
 
   'POST /api/plan': async (req) => {
-    const fam = family(req); const b = await readJson(req);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(b.date || '') || !Array.isArray(b.tasks)) throw Object.assign(new Error('Rencana tidak valid'), { status: 400 });
+    const code = auth(req); const b = await readJson(req);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(b.date || '') || !Array.isArray(b.tasks)) throw httpError(400, 'Rencana tidak valid');
     const tasks = b.tasks.slice(0, 5).map((t) => ({ type: String(t.type || 'custom').slice(0, 20), label: String(t.label || 'Tugas').slice(0, 60), minutes: Math.max(1, Math.min(15, Number(t.minutes) || 5)) }));
-    fam.plans[b.date] = { tasks, source: 'family', approvedAt: new Date().toISOString() };
-    store.save();
+    await store.mutate(code, (fam) => { fam.plans[b.date] = { tasks, source: 'family', approvedAt: new Date().toISOString() }; });
     return { ok: true };
   },
 
-  'GET /api/config': async (req) => ({ config: family(req).config || null }),
+  'GET /api/config': async (req) => ({ config: (await store.get(auth(req))).config || null }),
 
   'POST /api/config': async (req) => {
-    const fam = family(req); const b = await readJson(req);
-    if (!b.updatedAt) throw Object.assign(new Error('updatedAt wajib'), { status: 400 });
-    if (!fam.config || b.updatedAt > fam.config.updatedAt) { fam.config = b; store.save(); return { ok: true, applied: true }; }
-    return { ok: true, applied: false };
+    const code = auth(req); const b = await readJson(req);
+    if (!b.updatedAt) throw httpError(400, 'updatedAt wajib');
+    return store.mutate(code, (fam) => {
+      if (!fam.config || b.updatedAt > fam.config.updatedAt) { fam.config = b; return { ok: true, applied: true }; }
+      return { ok: true, applied: false };
+    });
   },
 };
 
@@ -231,5 +233,5 @@ export const server = http.createServer(async (req, res) => {
 });
 
 if (process.env.STROKUNI_NO_LISTEN !== '1') {
-  server.listen(PORT, () => console.log(`[strokuni] server on http://localhost:${PORT} · AI ${aiEnabled() ? MODEL : 'off'} · ${FAMILY_CODES.length} family code(s)`));
+  server.listen(PORT, () => console.log(`[strokuni] server on :${PORT} · AI ${aiEnabled() ? `${MODEL} (cadangan ${FALLBACK_MODEL})` : 'off'} · store ${process.env.FIRESTORE_DATABASE ? 'firestore:' + process.env.FIRESTORE_DATABASE : 'file'} · ${FAMILY_CODES.length} family code(s)`));
 }

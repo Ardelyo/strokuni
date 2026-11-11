@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "strokuni-server",
   "version": "0.1.0",
   "private": true,
@@ -10,7 +10,7 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^1.8.0",
+    "@google-cloud/firestore": "^9.4.1",
     "zod": "^4.6.7"
   },
   "engines": {

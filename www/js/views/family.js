@@ -374,7 +374,7 @@ export function lainnyaView() {
     h('div', { class: 'section-title' }, 'Server perantara AI & sinkron'),
     h('div', { class: 'card filled stack', style: { '--bg-field': 'var(--md-surface-container-highest)' } },
       field('Alamat server', bind('serverUrl', input({ type: 'url', value: s.serverUrl, placeholder: 'https://strokuni-server.contoh.com' }), configureNative)),
-      field('Kode keluarga', bind('familyCode', input({ value: s.familyCode, placeholder: 'Sama di semua HP keluarga' }), configureNative), 'Kunci API AI hanya disimpan di server, tidak di HP.'),
+      field('Kode keluarga', bind('familyCode', input({ value: s.familyCode, placeholder: 'Sama di semua HP keluarga' }), configureNative), 'Akses AI hanya dimiliki server, tidak ada di HP.'),
       h('div', { class: 'row wrap' }, btn('Tes koneksi', { kind: 'tonal', ico: 'cloud', onClick: async () => {
         serverStatus.textContent = 'Menghubungi…';
         try { const r = await ping(); serverStatus.textContent = `Tersambung · AI ${r.ai ? 'aktif (' + r.model + ')' : 'belum diatur'} · sisa ${r.remainingToday} panggilan hari ini`; heartbeat(); }

@@ -44,7 +44,7 @@ HP Lio (APK)                     Server perantara (server/)          HP Keluarga
 │  setAlarmClock         │◄───────┤ • batas panggilan/hari    │◄───────┤ rencana disetujui  │
 │  layar penuh, boot     │ rencana│ • peringatan & heartbeat  │        │ peringatan keras   │
 └───────────────────────┘        └────────────┬─────────────┘        └────────────────────┘
-                                              │ Claude API
+                                              │ Vertex AI (Gemini) + Firestore
 ```
 
 - **www/**: aplikasi web tanpa langkah build (HTML/CSS/ES modules), desain Material Design 3 buatan sendiri, offline lewat service worker, ikon Material Symbols dibundel.
@@ -54,7 +54,7 @@ HP Lio (APK)                     Server perantara (server/)          HP Keluarga
   - `BootReceiver.kt`: memulihkan alarm setelah restart, update, atau ganti jam
   - `HeartbeatWorker.kt`: sinyal "masih hidup" tiap 15 menit; di HP keluarga mengecek peringatan
   - `StrokuniPlugin.kt`: jembatan JS (jadwal, status izin, TTS, dikte, telepon)
-- **server/**: Node 22 + `@anthropic-ai/sdk`. Keluaran AI memakai structured output (JSON schema), divalidasi ulang dengan zod, dan ditolak bila menyebut perubahan obat.
+- **server/**: Node 22 di Cloud Run, AI **Gemini lewat Vertex AI** (`gemini-3.8-flash`, cadangan `gemini-3.5-flash-lite`), data di **Firestore**. Keluaran AI memakai response schema, divalidasi ulang dengan zod, dan ditolak bila menyebut perubahan obat.
 
 ### Tiga lapis agar pengingat tidak hilang
 
@@ -81,31 +81,28 @@ npm run dev            # web di http://localhost:5173  (tambahkan ?demo)
 node scripts/check.mjs # cek semua import modul
 ```
 
-Server:
+Server (lokal, tanpa GCP: AI mati dan data di file JSON):
 
 ```bash
 cd server
 npm install
-cp .env.example .env   # isi ANTHROPIC_API_KEY dan FAMILY_CODES
+cp .env.example .env   # isi FAMILY_CODES; kosongkan GOOGLE_CLOUD_PROJECT bila tanpa AI
 node --env-file=.env index.mjs
 npm test
 ```
 
 Lalu di aplikasi: Mode Keluarga → Lainnya → Server: isi alamat server dan kode keluarga yang sama di semua HP.
 
-### Hosting server
-
-Server hanya butuh Node 22 dan satu folder data. Pilihan: VPS kecil, Railway, Render, Fly.io, atau Docker:
+### Server di Google Cloud (project `gemma4good-494311`)
 
 ```bash
 cd server
-docker build -t strokuni-server .
-docker run -p 8787:8787 -v strokuni-data:/data --env-file .env strokuni-server
+bash deploy-gcp.sh
 ```
 
-Server harus diakses lewat **HTTPS** agar bisa dipanggil dari APK dan GitHub Pages.
+Skrip membuat resource baru saja: service account `strokuni-server` (hanya peran Vertex AI User dan Datastore User), database Firestore `strokuni` (Jakarta), secret `strokuni-family-codes`, dan Cloud Run `strokuni-server`. Layanan dan database lain di project tidak disentuh. Skrip mencetak alamat server dan kode keluarga; isi keduanya di aplikasi.
 
-Model default `claude-opus-5-5` dengan effort rendah. Untuk menekan biaya, set `MODEL=claude-sonnet-5-5` atau `claude-haiku-5-5`. Batas default 20 panggilan per keluarga per hari (`DAILY_CALL_LIMIT`). Server memakai fallback penolakan sisi server (`fallbacks: "default"`) bila tersedia.
+Model: `gemini-3.8-flash` (utama) dan `gemini-3.5-flash-lite` (cadangan otomatis bila utama gagal atau keluarannya tidak lolos validasi), lewat endpoint `global` Vertex AI. Ganti dengan variabel `GEMINI_MODEL` / `GEMINI_FALLBACK_MODEL`. Batas default 20 panggilan AI per keluarga per hari (`DAILY_CALL_LIMIT`). Server publik tetapi setiap permintaan butuh kode keluarga.
 
 ### Membangun APK sendiri
 

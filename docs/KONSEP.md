@@ -115,7 +115,7 @@ Penjaga di server:
 ## Keputusan yang masih dibutuhkan keluarga
 
 - [ ] APK langsung atau jalur uji internal Play (default proyek ini: APK langsung via GitHub Releases)
-- [ ] Model AI cloud dan siapa yang menanggung biaya kunci API (default: Claude, bisa diganti lewat `MODEL`)
+- [ ] Model AI cloud dan siapa yang menanggung biaya kunci API (diputuskan: Gemini 3.8 Flash dengan cadangan 3.5 Flash Lite lewat Vertex AI di project gemma4good-494311)
 - [ ] Jam pengingat obat dan jam ringkasan malam
 - [ ] Siapa pemegang PIN Mode Keluarga
 - [ ] Berapa lama satu sesi latihan (setelah bicara dengan terapis)
