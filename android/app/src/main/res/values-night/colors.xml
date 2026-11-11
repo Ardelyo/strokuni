@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="strokuni_primary">#80D5D4</color>
+    <color name="strokuni_surface">#0E1514</color>
+    <bool name="strokuni_light_bars">false</bool>
+</resources>

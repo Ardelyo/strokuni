@@ -1,0 +1,9 @@
+{
+  "appId": "id.strokuni.app",
+  "appName": "Strokuni",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false,
+    "backgroundColor": "#FFFBFE"
+  }
+}

@@ -1,0 +1,19 @@
+﻿{
+  "name": "strokuni-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Server perantara Strokuni: menyimpan kunci API, menegakkan aturan, memanggil Claude.",
+  "main": "index.mjs",
+  "scripts": {
+    "start": "node index.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
+    "zod": "^4.6.7"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
