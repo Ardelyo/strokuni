@@ -28,7 +28,7 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - uses: android-actions/setup-android@v3
+      # ubuntu-latest already ships the Android SDK ($ANDROID_HOME); Gradle installs missing platforms.
 
       - name: Install & check web app
         run: |
