@@ -37,7 +37,7 @@ function fresh() {
       trackingPaused: false,
       theme: 'auto',
       role: 'lio', // 'lio' | 'family'
-      serverUrl: '',
+      serverUrl: 'https://strokuni-server-pgku264xda-et.a.run.app',
       familyCode: '',
       escalation: { repeatMin: 10, alertMin: 30, callMin: 60 },
       configUpdatedAt: 0,

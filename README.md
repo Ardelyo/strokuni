@@ -100,6 +100,8 @@ cd server
 bash deploy-gcp.sh
 ```
 
+Server yang sudah berjalan: `https://strokuni-server-pgku264xda-et.a.run.app` (alamat ini sudah jadi isian bawaan di aplikasi; kode keluarga diisi manual di Lainnya → Server).
+
 Skrip membuat resource baru saja: service account `strokuni-server` (hanya peran Vertex AI User dan Datastore User), database Firestore `strokuni` (Jakarta), secret `strokuni-family-codes`, dan Cloud Run `strokuni-server`. Layanan dan database lain di project tidak disentuh. Skrip mencetak alamat server dan kode keluarga; isi keduanya di aplikasi.
 
 Model: `gemini-3.8-flash` (utama) dan `gemini-3.5-flash-lite` (cadangan otomatis bila utama gagal atau keluarannya tidak lolos validasi), lewat endpoint `global` Vertex AI. Ganti dengan variabel `GEMINI_MODEL` / `GEMINI_FALLBACK_MODEL`. Batas default 20 panggilan AI per keluarga per hari (`DAILY_CALL_LIMIT`). Server publik tetapi setiap permintaan butuh kode keluarga.
